@@ -1,4 +1,4 @@
-import torch import torch.nn as nn import torch.optim as optim import torchvision import torchvision.transforms as transforms import matplotlib.pyplot as plt device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Load MNIST transform = transforms.Compose([transforms.ToTensor()]) train_data = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform) test_data = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform) train_loader = torch.utils.data.DataLoader(train_data, batch_size=64, shuffle=True) test_loader = torch.utils.data.DataLoader(test_data, batch_size=1, shuffle=True) # Neural Network class Net(nn.Module): def __init__(self): super(Net, self).__init__() self.fc1 = nn.Linear(28*28, 128) self.fc2 = nn.Linear(128, 10) def forward(self, x): x = x.view(-1, 28*28) x = torch.relu(self.fc1(x)) x = self.fc2(x) return x model = Net().to(device) criterion = nn.CrossEntropyLoss() optimizer = optim.Adam(model.parameters(), lr=0.001) # Train Model def train(): model.train() for epoch in range(3): for data, target in train_loader: data, target = data.to(device), target.to(device) optimizer.zero_grad() output = model(data) loss = criterion(output, target) loss.backward() optimizer.step() print(f"Epoch {epoch+1} complete") # Test Accuracy def test(): model.eval() correct = 0 total = 0 for data, target in test_loader: data, target = data.to(device), target.to(device) output = import torch
+import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
@@ -192,3 +192,24 @@ print("Baseline Accuracy:", baseline_acc)
 print("FGSM Accuracy:", fgsm_acc)
 print("Defended Accuracy:", defended_acc)
 print("Defended FGSM Accuracy:", defended_fgsm_acc)
+epsilons = [0, 0.05, 0.1, 0.15, 0.2]
+eps_accuracies = []
+
+for eps in epsilons:
+    acc = test_fgsm(eps)
+    eps_accuracies.append(acc * 100)
+
+plt.figure()
+plt.plot(epsilons, eps_accuracies, marker='o')
+plt.title("FGSM Attack Strength vs Accuracy")
+plt.xlabel("Epsilon")
+plt.ylabel("Accuracy (%)")
+plt.grid()
+plt.show()
+accuracies = [96.9, 0.32, 45.5]
+labels = ["Normal", "Under Attack", "After Defense"]
+
+plt.plot(labels, accuracies, marker='o')
+plt.title("Model Accuracy Under Attack and Defense")
+plt.ylabel("Accuracy (%)")
+plt.show()

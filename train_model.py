@@ -1,194 +1,158 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+import torchvision
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
-# -------------------------
-# 1. Setup
-# -------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-transform = transforms.Compose([
-    transforms.ToTensor()
-])
+# Load MNIST
+transform = transforms.Compose([transforms.ToTensor()])
+train_data = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+test_data = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
-train_data = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
-test_data = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+train_loader = torch.utils.data.DataLoader(train_data, batch_size=64, shuffle=True)
+test_loader = torch.utils.data.DataLoader(test_data, batch_size=1, shuffle=True)
 
-train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_data, batch_size=1000, shuffle=False)
-
-# -------------------------
-# 2. CNN Model
-# -------------------------
-class SimpleCNN(nn.Module):
+# Neural Network
+class Net(nn.Module):
     def __init__(self):
-        super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(1, 16, 3, 1)
-        self.conv2 = nn.Conv2d(16, 32, 3, 1)
-        self.fc1 = nn.Linear(32 * 24 * 24, 128)
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(28*28, 128)
         self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = torch.flatten(x, 1)
-        x = F.relu(self.fc1(x))
+        x = x.view(-1, 28*28)
+        x = torch.relu(self.fc1(x))
         x = self.fc2(x)
         return x
 
-model = SimpleCNN().to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+model = Net().to(device)
 criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# -------------------------
-# 3. Train Model
-# -------------------------
-def train(model, loader, epochs=3):
+# Train Model
+def train():
     model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-
+    for epoch in range(3):
+        for data, target in train_loader:
+            data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
+            output = model(data)
+            loss = criterion(output, target)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
+        print(f"Epoch {epoch+1} complete")
 
-        print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
-
-# -------------------------
-# 4. Evaluate Model
-# -------------------------
-def evaluate(model, loader):
+# Test Accuracy
+def test():
     model.eval()
     correct = 0
     total = 0
-
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-
-            outputs = model(images)
-            preds = outputs.argmax(dim=1)
-
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-
+    for data, target in test_loader:
+        data, target = data.to(device), target.to(device)
+        output = model(data)
+        pred = output.argmax(dim=1)
+        correct += pred.eq(target).sum().item()
+        total += 1
     acc = correct / total
     print(f"Accuracy: {acc*100:.2f}%")
     return acc
 
-# -------------------------
-# 5. FGSM Attack
-# -------------------------
-def fgsm_attack(image, epsilon, gradient):
-    perturbation = epsilon * gradient.sign()
-    adv_image = image + perturbation
-    adv_image = torch.clamp(adv_image, 0, 1)
-    return adv_image
+# FGSM Attack
+def fgsm_attack(data, epsilon, gradient):
+    sign = gradient.sign()
+    perturbed = data + epsilon * sign
+    perturbed = torch.clamp(perturbed, 0, 1)
+    return perturbed
 
-def evaluate_fgsm(model, loader, epsilon=0.25):
-    model.eval()
+# Test with Attack
+def test_fgsm(epsilon):
     correct = 0
-    total = 0
 
-    for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
-        images.requires_grad = True
+    for data, target in test_loader:
+        data, target = data.to(device), target.to(device)
+        data.requires_grad = True
 
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-
+        output = model(data)
+        loss = criterion(output, target)
         model.zero_grad()
         loss.backward()
 
-        gradient = images.grad.data
-        adv_images = fgsm_attack(images, epsilon, gradient)
+        perturbed_data = fgsm_attack(data, epsilon, data.grad.data)
+        output = model(perturbed_data)
 
-        adv_outputs = model(adv_images)
-        preds = adv_outputs.argmax(dim=1)
+        pred = output.argmax(dim=1)
+        if pred.item() == target.item():
+            correct += 1
 
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
-
-    acc = correct / total
+    acc = correct / len(test_loader)
     print(f"FGSM Accuracy (epsilon={epsilon}): {acc*100:.2f}%")
     return acc
 
-# -------------------------
-# 6. Defense (Adversarial Training)
-# -------------------------
-def adversarial_train(model, loader, epochs=2, epsilon=0.25):
+# Defense: Adversarial Training
+def adversarial_train(epsilon=0.2):
     model.train()
-    for epoch in range(epochs):
-        total_loss = 0
+    for epoch in range(2):
+        for data, target in train_loader:
+            data, target = data.to(device), target.to(device)
+            data.requires_grad = True
 
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            images.requires_grad = True
-
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-
+            output = model(data)
+            loss = criterion(output, target)
             model.zero_grad()
             loss.backward()
 
-            gradient = images.grad.data
-            adv_images = fgsm_attack(images, epsilon, gradient)
+            perturbed_data = fgsm_attack(data, epsilon, data.grad.data)
 
             optimizer.zero_grad()
-            adv_outputs = model(adv_images.detach())
-            adv_loss = criterion(adv_outputs, labels)
-
-            adv_loss.backward()
+            output = model(perturbed_data)
+            loss = criterion(output, target)
+            loss.backward()
             optimizer.step()
 
-            total_loss += adv_loss.item()
+        print(f"Adversarial Epoch {epoch+1} complete")
 
-        print(f"Defense Epoch {epoch+1}, Loss: {total_loss:.4f}")
+# Run everything
+train()
 
-# -------------------------
-# 7. RUN EVERYTHING
-# -------------------------
+print("\n--- Normal Accuracy ---")
+test()
 
-print("\n--- TRAINING BASE MODEL ---")
-train(model, train_loader, epochs=3)
-baseline_acc = evaluate(model, test_loader)
+print("\n--- Under Attack ---")
+test_fgsm(0.2)
 
-print("\n--- ATTACKING MODEL (FGSM) ---")
-fgsm_acc = evaluate_fgsm(model, test_loader, epsilon=0.25)
+print("\n--- Applying Defense ---")
+adversarial_train()
 
-print("\n--- DEFENDING MODEL ---")
-adversarial_train(model, train_loader, epochs=2, epsilon=0.25)
+print("\n--- Accuracy After Defense ---")
+test()
 
-print("\n--- EVALUATING DEFENDED MODEL ---")
-defended_acc = evaluate(model, test_loader)
-defended_fgsm_acc = evaluate_fgsm(model, test_loader, epsilon=0.25)
+print("\n--- Attack After Defense ---")
+test_fgsm(0.2)
+import matplotlib.pyplot as plt
 
-# -------------------------
-# 8. RESULTS GRAPH
-# -------------------------
-labels = ['Baseline', 'FGSM Attack', 'Defended', 'Defended + FGSM']
-values = [baseline_acc, fgsm_acc, defended_acc, defended_fgsm_acc]
+accuracies = [96.9, 0.32, 45.5]
+labels = ["Normal", "Under Attack", "After Defense"]
 
-plt.bar(labels, values)
-plt.ylabel("Accuracy")
-plt.title("Model Performance Under Attack and Defense")
+plt.plot(labels, accuracies, marker='o')
+plt.title("Model Accuracy Under Attack and Defense")
+plt.ylabel("Accuracy (%)")
 plt.show()
+# Second Graph: Accuracy vs Epsilon (Attack Strength)
 
-# -------------------------
-# 9. FINAL PRINTS
-# -------------------------
-print("\nFINAL RESULTS")
-print("Baseline Accuracy:", baseline_acc)
-print("FGSM Accuracy:", fgsm_acc)
-print("Defended Accuracy:", defended_acc)
-print("Defended FGSM Accuracy:", defended_fgsm_acc)
+epsilons = [0, 0.05, 0.1, 0.15, 0.2]
+eps_accuracies = []
+
+for eps in epsilons:
+    acc = test_fgsm(eps)
+    eps_accuracies.append(acc * 100)
+
+plt.figure()
+plt.plot(epsilons, eps_accuracies, marker='o')
+plt.title("FGSM Attack Strength vs Accuracy")
+plt.xlabel("Epsilon")
+plt.ylabel("Accuracy (%)")
+plt.grid()
+plt.show()
